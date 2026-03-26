@@ -4,10 +4,11 @@ import cv2
 import torch
 import kornia
 import numpy as np
-from PySide6 import QtWidgets, QtCore
-from NodeGraphQt import NodeGraph, BaseNode
+from PySide6 import QtWidgets, QtCore, QtGui
+from NodeGraphQt import NodeGraph, BaseNode, PropertiesBinWidget
 
-# --- 1. THE READ NODE ---
+# --- 1. THE NODES ---
+
 class ReadNode(BaseNode):
     __identifier__ = 'asoka.nodes'
     NODE_NAME = 'Read'
@@ -16,8 +17,8 @@ class ReadNode(BaseNode):
         self.add_output('out')
         self.add_text_input('file_path', 'Path', text='')
         self.set_color(40, 150, 40)
+        self.set_property('width', 250)
 
-# --- 2. THE BLUR NODE (NOW POWERED BY KORNIA) ---
 class BlurNode(BaseNode):
     __identifier__ = 'asoka.nodes'
     NODE_NAME = 'Blur'
@@ -25,32 +26,32 @@ class BlurNode(BaseNode):
         super(BlurNode, self).__init__()
         self.add_input('in')
         self.add_output('out')
-        self.add_text_input('blur_val', 'Size', text='15')
+        self.add_text_input('blur_val', 'Size', text='25')
         self.set_color(40, 70, 150)
 
-    def process_image(self, image_path):
-        # 1. Load image via OpenCV
-        img = cv2.imread(image_path)
+    def process_image(self, path):
+        img = cv2.imread(path)
         if img is None: return None
-        
-        # 2. Convert to Tensor (The Kornia Way)
-        # We move it to RGB and then to a Tensor
         img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
         tensor = kornia.utils.image_to_tensor(img_rgb).float() / 255.0
-        tensor = tensor.unsqueeze(0) # Add batch dimension [1, C, H, W]
+        tensor = tensor.unsqueeze(0)
+        val = int(self.get_property('blur_val'))
+        k_size = val if val % 2 != 0 else val + 1
+        blurred = kornia.filters.gaussian_blur2d(tensor, (k_size, k_size), (1.5, 1.5))
+        out = kornia.utils.tensor_to_image(blurred.squeeze(0))
+        out = (out * 255).astype(np.uint8)
+        return cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
 
-        # 3. Apply Kornia Gaussian Blur
-        size = int(self.get_property('blur_val'))
-        # Kernel size must be odd
-        k_size = size if size % 2 != 0 else size + 1
-        blurred_tensor = kornia.filters.gaussian_blur2d(tensor, (k_size, k_size), (1.5, 1.5))
+class WriteNode(BaseNode):
+    __identifier__ = 'asoka.nodes'
+    NODE_NAME = 'Write'
+    def __init__(self):
+        super(WriteNode, self).__init__()
+        self.add_input('in')
+        self.add_text_input('export_path', 'Export Path', text='C:/ASOKA_Renders/output.png')
+        self.set_color(150, 150, 40)
+        self.set_property('width', 250)
 
-        # 4. Convert back to OpenCV format for viewing
-        blurred_img = kornia.utils.tensor_to_image(blurred_tensor.squeeze(0))
-        blurred_img = (blurred_img * 255).astype(np.uint8)
-        return cv2.cvtColor(blurred_img, cv2.COLOR_RGB2BGR)
-
-# --- 3. THE VIEWER NODE ---
 class ViewerNode(BaseNode):
     __identifier__ = 'asoka.nodes'
     NODE_NAME = 'Viewer'
@@ -59,51 +60,131 @@ class ViewerNode(BaseNode):
         self.add_input('in')
         self.set_color(150, 40, 150)
 
-    def show_result(self):
-        # Find the path from the Read node through the pipe
-        try:
-            blur_node = self.input(0).connected_ports()[0].node()
-            read_node = blur_node.input(0).connected_ports()[0].node()
-            path = read_node.get_property('file_path')
-            
-            if path and os.path.exists(path):
-                # Run the Blur processing!
-                final_img = blur_node.process_image(path)
-                cv2.imshow("ASOKA GPU VIEW", final_img)
-                cv2.waitKey(1)
-            else:
-                print("ASOKA: No file path found!")
-        except Exception as e:
-            print(f"ASOKA PIPE ERROR: {e}")
+# --- 2. UI CLASSES (VIEWER & STUDIO) ---
 
-# --- GLOBAL FUNCTIONS & UI START ---
-def open_browser(graph, node):
-    file_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Select Image", "", "Images (*.jpg *.png *.exr)")
-    if file_path: node.set_property('file_path', file_path)
+class InteractiveView(QtWidgets.QGraphicsView):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setScene(QtWidgets.QGraphicsScene(self))
+        self.setTransformationAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
+        self.setResizeAnchor(QtWidgets.QGraphicsView.AnchorUnderMouse)
+        self.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
+        self.setBackgroundBrush(QtGui.QBrush(QtGui.QColor(25, 25, 25)))
+        self.setDragMode(QtWidgets.QGraphicsView.ScrollHandDrag)
+        self._pixmap_item = None
 
-def trigger_viewer(graph, node):
-    node.show_result()
+    def set_image(self, pixmap):
+        self.scene().clear()
+        self._pixmap_item = self.scene().addPixmap(pixmap)
+        self.setSceneRect(QtCore.QRectF(pixmap.rect()))
+        self.fitInView(self.sceneRect(), QtCore.Qt.KeepAspectRatio)
+
+    def wheelEvent(self, event):
+        zoom_in = 1.25
+        zoom_out = 1 / zoom_in
+        if event.angleDelta().y() > 0:
+            self.scale(zoom_in, zoom_in)
+        else:
+            self.scale(zoom_out, zoom_out)
+
+class AsokaStudio(QtWidgets.QMainWindow):
+    def __init__(self, graph):
+        super().__init__()
+        self.setWindowTitle("ASOKA STUDIO - NukeX Interactive Build")
+        self.resize(1600, 900)
+        self.h_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.setCentralWidget(self.h_splitter)
+        self.v_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self.h_splitter.addWidget(self.v_splitter)
+        self.viewer_display = InteractiveView()
+        self.v_splitter.addWidget(self.viewer_display)
+        self.v_splitter.addWidget(graph.widget)
+        self.prop_bin = PropertiesBinWidget(node_graph=graph)
+        self.h_splitter.addWidget(self.prop_bin)
+        self.v_splitter.setSizes([500, 400])
+        self.h_splitter.setSizes([1100, 500])
+
+    def update_viewer(self, cv_img):
+        height, width, channel = cv_img.shape
+        bytes_per_line = 3 * width
+        q_img = QtGui.QImage(cv_img.data, width, height, bytes_per_line, QtGui.QImage.Format_BGR888)
+        pixmap = QtGui.QPixmap.fromImage(q_img)
+        self.viewer_display.set_image(pixmap)
+
+# --- 3. GLOBAL FUNCTIONS ---
+
+def open_file(graph, node):
+    path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Select Image", "", "Images (*.jpg *.png *.exr)")
+    if path:
+        node.set_property('file_path', path)
+
+def run_view(graph, node):
+    try:
+        ports = node.input(0).connected_ports()
+        if not ports: return
+        blur = ports[0].node()
+        read_ports = blur.input(0).connected_ports()
+        if not read_ports: return
+        path = read_ports[0].node().get_property('file_path')
+        if path and os.path.exists(path):
+            res = blur.process_image(path)
+            main_window.update_viewer(res)
+    except Exception as e: print(f"VIEW ERROR: {e}")
+
+# --- 4. STARTUP LOGIC ---
+
+# --- 3. GLOBAL FUNCTIONS ---
+
+def open_file(graph, node):
+    path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Select Image", "", "Images (*.jpg *.png *.exr)")
+    if path:
+        node.set_property('file_path', path)
+
+def run_view(graph, node):
+    try:
+        ports = node.input(0).connected_ports()
+        if not ports: return
+        blur = ports[0].node()
+        read_ports = blur.input(0).connected_ports()
+        if not read_ports: return
+        path = read_ports[0].node().get_property('file_path')
+        if path and os.path.exists(path):
+            res = blur.process_image(path)
+            main_window.update_viewer(res)
+    except Exception as e: print(f"VIEW ERROR: {e}")
+
+# NEW: Function to handle the double-click
+def on_node_double_clicked(node):
+    main_window.prop_bin.set_node(node)
+
+# --- 4. STARTUP LOGIC ---
 
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
     graph = NodeGraph()
+    
     graph.register_node(ReadNode)
     graph.register_node(BlurNode)
+    graph.register_node(WriteNode)
     graph.register_node(ViewerNode)
 
-    nodes_menu = graph.get_context_menu('nodes')
-    nodes_menu.add_command('Load Image File...', open_browser, node_type='asoka.nodes.ReadNode')
-    nodes_menu.add_command('Show Result', trigger_viewer, node_type='asoka.nodes.ViewerNode')
+    main_window = AsokaStudio(graph)
 
-    graph_widget = graph.widget
-    graph_widget.resize(1100, 800)
-    graph_widget.show()
+    # --- THE MAGIC LINK ---
+    # This connects the double-click event to our function
+    graph.node_double_clicked.connect(on_node_double_clicked)
 
-    # Create & Connect
-    n_read = graph.create_node('asoka.nodes.ReadNode', pos=[-300, 0])
-    n_blur = graph.create_node('asoka.nodes.BlurNode', pos=[0, 0])
-    n_view = graph.create_node('asoka.nodes.ViewerNode', pos=[300, 0])
-    n_read.set_output(0, n_blur.input(0))
-    n_blur.set_output(0, n_view.input(0))
+    m = graph.get_context_menu('nodes')
+    m.add_command('Load Image...', open_file, node_type='asoka.nodes.ReadNode')
+    m.add_command('Show Image', run_view, node_type='asoka.nodes.ViewerNode')
+
+    main_window.show()
+
+    n1 = graph.create_node('asoka.nodes.ReadNode', pos=[-600, 0])
+    n2 = graph.create_node('asoka.nodes.BlurNode', pos=[-200, 0])
+    n3 = graph.create_node('asoka.nodes.ViewerNode', pos=[200, 0])
+    n1.set_output(0, n2.input(0))
+    n2.set_output(0, n3.input(0))
 
     sys.exit(app.exec())
