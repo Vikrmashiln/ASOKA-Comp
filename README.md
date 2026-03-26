@@ -121,6 +121,6 @@ ASOKA is at an early stage. Contributions from both developers and VFX professio
 
 ## Contact
 
-Maintained by [@Vikrmashiln](https://github.com/Vikrmashiln) — VFX artist and ASOKA project lead.
+Maintained by [@Vikrmashiln](https://github.com/Vikrmashiln) — VFX Ganaralist and ASOKA project lead.
 
 For questions, partnership inquiries, or studio feedback: [open an issue](https://github.com/Vikrmashiln/ASOKA-Comp/issues) or start a [Discussion](https://github.com/Vikrmashiln/ASOKA-Comp/discussions).
