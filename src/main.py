@@ -1,42 +1,49 @@
 import sys
+import os
+import cv2 # This is our "Eyes"
 from PySide6 import QtWidgets, QtCore
-from NodeGraphQt import NodeGraph, BaseNode, NodeBaseWidget
+from NodeGraphQt import NodeGraph, BaseNode
 
-# --- 1. CUSTOM BROWSE WIDGET ---
-# --- FIXED: The Custom Button Widget ---
-class BrowseFileWidget(NodeBaseWidget):
-    def __init__(self, parent=None):
-        super(BrowseFileWidget, self).__init__(parent, name='Browse', label='File')
-        self.set_custom_widget(QtWidgets.QPushButton('Browse...'))
-        self.get_custom_widget().clicked.connect(self.on_browse)
-
-    def on_browse(self):
-        file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            None, "ASOKA: Select Plate", "", "Images (*.exr *.jpg *.png *.tiff)"
-        )
-        if file_path:
-            self.node.set_property('file_path', file_path)
-            print(f"ASOKA: Linked -> {file_path}")
-
-    # --- ADD THESE TWO LINES TO FIX THE ERROR ---
-    def get_value(self):
-        return None  # The button itself doesn't have a value
-
-    def set_value(self, value):
-        pass  # We don't need to set a value on a button
-
-# --- 2. READ NODE ---
+# --- 1. THE READ NODE ---
 class ReadNode(BaseNode):
     __identifier__ = 'asoka.nodes'
     NODE_NAME = 'Read'
     def __init__(self):
         super(ReadNode, self).__init__()
         self.add_output('out')
-        self.add_text_input('file_path', 'File Path', text='')
-        self.add_custom_widget(BrowseFileWidget())
+        self.add_text_input('file_path', 'Path', text='')
         self.set_color(40, 150, 40)
 
-# --- 3. BLUR NODE ---
+# --- 2. THE VIEWER NODE (NEW!) ---
+class ViewerNode(BaseNode):
+    __identifier__ = 'asoka.nodes'
+    NODE_NAME = 'Viewer'
+    def __init__(self):
+        super(ViewerNode, self).__init__()
+        self.add_input('in')
+        self.set_color(150, 40, 150) # Purple
+
+    def show_result(self, graph, node):
+        # 1. Trace back to the Read node to get the path
+        input_port = self.input(0)
+        connected_ports = input_port.connected_ports()
+        
+        if not connected_ports:
+            print("ASOKA: Nothing connected to Viewer!")
+            return
+
+        source_node = connected_ports[0].node()
+        path = source_node.get_property('file_path')
+
+        if path and os.path.exists(path):
+            # 2. Use OpenCV to show the image
+            img = cv2.imread(path)
+            cv2.imshow("ASOKA VIEW - " + os.path.basename(path), img)
+            cv2.waitKey(1) # Keeps the window alive
+        else:
+            print("ASOKA: No image found at path!")
+
+# --- 3. THE BLUR NODE ---
 class BlurNode(BaseNode):
     __identifier__ = 'asoka.nodes'
     NODE_NAME = 'Blur'
@@ -47,40 +54,38 @@ class BlurNode(BaseNode):
         self.add_text_input('blur_val', 'Size', text='5')
         self.set_color(40, 70, 150)
 
-# --- 4. WRITE NODE ---
-class WriteNode(BaseNode):
-    __identifier__ = 'asoka.nodes'
-    NODE_NAME = 'Write'
-    def __init__(self):
-        super(WriteNode, self).__init__()
-        self.add_input('in')
-        self.add_text_input('export_path', 'Export To', text='C:/ASOKA_Renders/output.png')
-        self.set_color(150, 150, 40)
+# --- 4. THE GLOBAL MENU FUNCTION ---
+def open_browser(graph, node):
+    file_path, _ = QtWidgets.QFileDialog.getOpenFileName(None, "Select Image", "", "Images (*.jpg *.png *.exr)")
+    if file_path:
+        node.set_property('file_path', file_path)
 
-# --- MAIN APP ---
+def trigger_viewer(graph, node):
+    node.show_result(graph, node)
+
 if __name__ == '__main__':
     app = QtWidgets.QApplication(sys.argv)
-    
-    # Create the graph
     graph = NodeGraph()
-
-    # Register nodes
+    
     graph.register_node(ReadNode)
     graph.register_node(BlurNode)
-    graph.register_node(WriteNode)
+    graph.register_node(ViewerNode)
 
-    # Show UI
+    # ADD MENU COMMANDS
+    nodes_menu = graph.get_context_menu('nodes')
+    nodes_menu.add_command('Load Image File...', open_browser, node_type='asoka.nodes.ReadNode')
+    nodes_menu.add_command('Show Image', trigger_viewer, node_type='asoka.nodes.ViewerNode')
+
     graph_widget = graph.widget
     graph_widget.resize(1100, 800)
-    graph_widget.setWindowTitle("ASOKA - Studio Build")
     graph_widget.show()
 
-    # Create & Connect
+    # CREATE PIPELINE
     n_read = graph.create_node('asoka.nodes.ReadNode', pos=[-300, 0])
     n_blur = graph.create_node('asoka.nodes.BlurNode', pos=[0, 0])
-    n_write = graph.create_node('asoka.nodes.WriteNode', pos=[300, 0])
+    n_view = graph.create_node('asoka.nodes.ViewerNode', pos=[300, 0])
     
     n_read.set_output(0, n_blur.input(0))
-    n_blur.set_output(0, n_write.input(0))
+    n_blur.set_output(0, n_view.input(0))
 
     sys.exit(app.exec())
